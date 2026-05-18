@@ -38,7 +38,7 @@ int poke_num = 0;                                      // this variable is the n
 int pokes_required = 1;                                // increase the number of pokes required each time a pellet is received using an exponential equation
 
 void setup() {
-  Serial.begin(115200);                                // init serial port, might not be neccessary
+  Serial.begin(115200);                                // start listening on the serial port so we can send time sync
   fed3.ClassicFED3 = true;
   fed3.begin();                                        //Setup the FED3 hardware
   fed3.disableSleep();                                 //disable sleep for time sync purposes, this will hurt battery but sync requires a wired connection anyways
@@ -249,12 +249,40 @@ void loop() {
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
   fed3.run();
 
+  // Live Tracking System over Serial
+  static int lastLeftCount = 0;
+  static int lastRightCount = 0;
+  static int lastPelletCount = 0;
+
+  if (fed3.LeftCount > lastLeftCount) {
+    Serial.print("Left Poke, Total: ");
+    Serial.println(fed3.LeftCount);
+    lastLeftCount = fed3.LeftCount;
+  }
+  
+  if (fed3.RightCount > lastRightCount) {
+    Serial.print("Right Poke, Total: ");
+    Serial.println(fed3.RightCount);
+    lastRightCount = fed3.RightCount;
+  }
+  
+  if (fed3.PelletCount > lastPelletCount) {
+    Serial.print("Pellet Dispensed, Total: ");
+    Serial.println(fed3.PelletCount);
+    lastPelletCount = fed3.PelletCount;
+  }
+
   // Time Syncronization System
   if (Serial.available() > 0) {
     String command = Serial.readStringUntil('\n');
+    command.trim(); // remove any carriage returns
     
+    // Handshake for GUI auto-discovery
+    if (command == "PING") {
+        Serial.println("PONG_FED3");
+    }
     // check if the command starts with SYNC:
-    if (command.startsWith("SYNC:")) {
+    else if (command.startsWith("SYNC:")) {
         // parse the incoming string: SYNC:YYYY,MM,DD,HH,MM,SS
         int y = command.substring(5, 9).toInt();
         int m = command.substring(10, 12).toInt();
