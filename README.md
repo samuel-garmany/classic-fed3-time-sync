@@ -4,8 +4,6 @@ This repository contains modified firmware for the **Feeding Experimentation Dev
 
 This sketch is modified from the original `ClassicFED3` script from the official [KravitzLabDevices/FED3_library](https://github.com/KravitzLabDevices/FED3_library).
 
----
-
 ## Installation & Setup
 
 **System & IDE Setup:** Follow the official [FED3 Setup Guide](https://github.com/KravitzLabDevices/FED3_library/wiki/Get-started) to configure your computer and Arduino IDE.
@@ -13,12 +11,8 @@ This sketch is modified from the original `ClassicFED3` script from the official
 The modified sketch is located at:
 * [ClassicFed3withTimeSync.ino](file:///home/user/Documents/Donaldson%20Lab/classic-fed3-time-sync/ClassicFed3withTimeSync/ClassicFed3withTimeSync.ino)
 
----
-
 > [!IMPORTANT]
 > Because time synchronization and real-time tracking require a continuous wired USB connection to a host computer running FNT, sleep mode is disabled in this firmware. This will increase battery consumption.
-
----
 
 ## Key Modifications
 
@@ -28,7 +22,6 @@ Compared to the standard Classic FED3 firmware, this version introduces:
 3. **Live Event Tracking:** Automatically broadcasts nosepoke and pellet dispensing events over the serial port as they occur.
 4. **Interactive Time Synchronization:** Adds a protocol to sync the FED3's real-time clock (RTC) dynamically via serial commands.
 
----
 
 ## Serial Communication Protocol
 
