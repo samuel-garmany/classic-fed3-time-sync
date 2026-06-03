@@ -46,7 +46,6 @@ When events occur, the FED3 outputs the following strings instantly:
 The modified sketch is located at:
 * [ClassicFed3withTimeSync.ino](file:///home/user/Documents/Donaldson%20Lab/classic-fed3-time-sync/ClassicFed3withTimeSync/ClassicFed3withTimeSync.ino)
 
-### Requirements
-Ensure you have the following Arduino libraries installed:
-* `FED3` (Standard FED3 library)
-* `RTClib` (Adafruit RTC library for interacting with the clock)
+### Requirements & Setup
+
+**System & IDE Setup:** Follow the official [FED3 Setup Guide](https://github.com/KravitzLabDevices/FED3_library/wiki/Get-started) to configure your computer and Arduino IDE.
