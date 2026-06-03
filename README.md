@@ -1,6 +1,6 @@
 # Classic FED3 Time Sync
 
-This repository contains modified firmware for the **Feeding Experimentation Device 3 (FED3)**, customized to enable real-time event tracking and automated clock synchronization when paired with the FNT GUI.
+This repository contains modified firmware for the **Feeding Experimentation Device 3 (FED3)**, customized to enable real-time event tracking and automated clock synchronization when paired with the [FieldNeuroToolbox (FNT)](https://github.com/calebvogt/fnt).
 
 This sketch is modified from the original `ClassicFED3` script from the official [KravitzLabDevices/FED3_library](https://github.com/KravitzLabDevices/FED3_library).
 
