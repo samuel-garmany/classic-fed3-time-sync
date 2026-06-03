@@ -1,11 +1,22 @@
 # Classic FED3 Time Sync
 
-This repository contains modified firmware for the **Feeding Experimentation Device 3 (FED3)**, customized to enable real-time event tracking and automated clock synchronization when paired with the [FieldNeuroToolbox (FNT)](https://github.com/calebvogt/fnt) GUI. 
+This repository contains modified firmware for the **Feeding Experimentation Device 3 (FED3)**, customized to enable real-time event tracking and automated clock synchronization when paired with the FNT GUI.
 
 This sketch is modified from the original `ClassicFED3` script from the official [KravitzLabDevices/FED3_library](https://github.com/KravitzLabDevices/FED3_library).
 
+---
+
+## Installation & Setup
+
+**System & IDE Setup:** Follow the official [FED3 Setup Guide](https://github.com/KravitzLabDevices/FED3_library/wiki/Get-started) to configure your computer and Arduino IDE.
+
+The modified sketch is located at:
+* [ClassicFed3withTimeSync.ino](file:///home/user/Documents/Donaldson%20Lab/classic-fed3-time-sync/ClassicFed3withTimeSync/ClassicFed3withTimeSync.ino)
+
+---
+
 > [!IMPORTANT]
-> Because time synchronization and real-time tracking require a continuous wired USB connection to a host computer running FNT, sleep mode is disabled in this firmware. This will increase battery consumption; it is recommended to run the FED3 with a persistent USB power source.
+> Because time synchronization and real-time tracking require a continuous wired USB connection to a host computer running FNT, sleep mode is disabled in this firmware. This will increase battery consumption.
 
 ---
 
@@ -38,14 +49,3 @@ When events occur, the FED3 outputs the following strings instantly:
 * **Left Nosepoke:** `Left Poke, Total: <count>`
 * **Right Nosepoke:** `Right Poke, Total: <count>`
 * **Pellet Dispensing:** `Pellet Dispensed, Total: <count>`
-
----
-
-## Codebase Reference
-
-The modified sketch is located at:
-* [ClassicFed3withTimeSync.ino](file:///home/user/Documents/Donaldson%20Lab/classic-fed3-time-sync/ClassicFed3withTimeSync/ClassicFed3withTimeSync.ino)
-
-### Requirements & Setup
-
-**System & IDE Setup:** Follow the official [FED3 Setup Guide](https://github.com/KravitzLabDevices/FED3_library/wiki/Get-started) to configure your computer and Arduino IDE.
