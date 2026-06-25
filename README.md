@@ -1,6 +1,9 @@
-# Classic FED3 Time Sync
+# Classic FED3 with FNT Support
 
-This repository contains modified firmware for the **Feeding Experimentation Device 3 (FED3)**, customized to enable real-time event tracking and automated clock synchronization when paired with the [FieldNeuroToolbox (FNT)](https://github.com/calebvogt/fnt).
+> [!WARNING]
+> This software has only been tested on the FED 3.2 revision, your milage may vary when attempting to use a different model.
+
+This repository contains modified firmware for the **Feeding Experimentation Device 3 (FED3)**, customized to enable real-time event tracking, automated clock synchronization, and on-the-fly behavioral protocol switching when paired with the [FieldNeuroToolbox (FNT)](https://github.com/calebvogt/fnt).
 
 This sketch is modified from the original `ClassicFED3` script from the official [KravitzLabDevices/FED3_library](https://github.com/KravitzLabDevices/FED3_library).
 
@@ -11,8 +14,8 @@ This sketch is modified from the original `ClassicFED3` script from the official
 The modified sketch is located at:
 * [ClassicFed3withTimeSync.ino](file:///home/user/Documents/Donaldson%20Lab/classic-fed3-time-sync/ClassicFed3withTimeSync/ClassicFed3withTimeSync.ino)
 
-> [!IMPORTANT]
-> Because time synchronization and real-time tracking require a continuous wired USB connection to a host computer running FNT, sleep mode is disabled in this firmware. This will increase battery consumption.
+> [!NOTE]
+> Because these changes require a continuous wired USB connection to a host computer running FNT, sleep mode is disabled in this firmware. This will increase battery consumption.
 
 ## Key Modifications
 
