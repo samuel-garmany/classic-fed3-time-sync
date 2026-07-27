@@ -14,11 +14,13 @@
   June, 2026
 */
 
-#include <FED3.h>                //Include the FED3 library 
+#include <FED3.h>                //Include the FED3 library
 #include <RTClib.h>              //Added for time sync
 String sketch = "Classic";       //Unique identifier text for each sketch
 FED3 fed3 (sketch);              //Start the FED3 object
 extern RTC_PCF8523 rtc;          //Connect to the clock
+
+#define FNT_FW_VERSION "2.0"                           // bumped whenever the serial protocol changes
 
 //variables for PR tasks
 int poke_num = 0;                                      // this variable is the number of pokes since last pellet
@@ -32,6 +34,28 @@ unsigned long timeoutDuration = 0;                     // in milliseconds
 int lastLeftCount = 0;
 int lastRightCount = 0;
 int lastPelletCount = 0;
+
+////////////////////////////////////////////////////////////////////////////////
+//  Non-blocking SD file streaming
+//
+//  Earlier firmware pushed a whole CSV inside the command handler. That starved
+//  fed3.run() for the length of the transfer (frozen display, unlogged pokes),
+//  and because Serial.write() blocks once the host stops draining the USB CDC
+//  buffer, any interruption on the host wedged the device until a power cycle.
+//
+//  Streaming is now a state machine serviced once per loop(): each pass moves at
+//  most STREAM_CHUNK bytes and only as many as the CDC buffer can accept right
+//  now, so loop() always returns and the device stays responsive. If the host
+//  stops reading for STREAM_IDLE_TIMEOUT the transfer aborts itself.
+////////////////////////////////////////////////////////////////////////////////
+
+#define STREAM_CHUNK 64                                // max bytes handed to Serial per loop() pass
+#define STREAM_IDLE_TIMEOUT 15000UL                    // ms with a full TX buffer before we give up
+
+File streamFile;
+bool streamActive = false;
+uint32_t streamCrc = 0xFFFFFFFF;
+unsigned long streamLastProgress = 0;
 
 // Helper to draw the animated mouse at a specific X position
 void drawMouse(int x) {
@@ -56,6 +80,156 @@ void drawMouse(int x) {
     fed3.display.fillRoundRect(x + 15, 99, 8, 4, 3, BLACK);    //foot
     fed3.display.fillRoundRect(x + 8, 97, 8, 6, 3, BLACK);     //back foot
   }
+}
+
+// Incremental CRC-32 (same polynomial the host's zlib.crc32 uses).
+uint32_t crc32Update(uint32_t crc, uint8_t c) {
+  crc ^= c;
+  for (uint8_t j = 0; j < 8; j++) {
+    crc = (crc & 1) ? ((crc >> 1) ^ 0xEDB88320) : (crc >> 1);
+  }
+  return crc;
+}
+
+// Current RTC time as ISO-8601, so every serial line carries the device's own
+// clock and the host can verify its sync offset rather than assuming it.
+String isoNow() {
+  DateTime n = rtc.now();
+  char buf[20];
+  sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%02d",
+          n.year(), n.month(), n.day(), n.hour(), n.minute(), n.second());
+  return String(buf);
+}
+
+void closeFileStream() {
+  if (streamActive) {
+    streamFile.close();
+    streamActive = false;
+  }
+}
+
+// Abort without ever blocking: the notification is only emitted if a transfer
+// was actually running and the TX buffer has room. The host has its own
+// transfer timeout and recovers either way.
+void abortFileStream(const char* reason) {
+  if (!streamActive) return;
+  closeFileStream();
+  if (Serial && Serial.availableForWrite() > 32) {
+    Serial.print("ERROR:STREAM_ABORTED:");
+    Serial.println(reason);
+  }
+}
+
+void finishFileStream() {
+  closeFileStream();
+  Serial.write(0x04);                                  // EOT terminates the data section
+  Serial.println();
+  Serial.print("CRC32:");
+  Serial.println(~streamCrc, HEX);
+}
+
+// GET_FILE:<name>[,<offset>] — offset lets the host resume an interrupted
+// transfer, and lets it tail a growing log by asking only for the bytes it has
+// not already mirrored.
+void startFileStream(String name, uint32_t offset) {
+  if (streamActive) {
+    Serial.println("ERROR:STREAM_BUSY");
+    return;
+  }
+  streamFile = fed3.SD.open(name, FILE_READ);
+  if (!streamFile) {
+    Serial.print("ERROR:FILE_NOT_FOUND:");
+    Serial.println(name);
+    return;
+  }
+  uint32_t size = streamFile.fileSize();
+  if (offset > size) offset = size;                    // host mirror is ahead (file rotated): resend nothing
+  if (offset > 0) streamFile.seek(offset);
+
+  streamCrc = 0xFFFFFFFF;
+  streamActive = true;
+  streamLastProgress = millis();
+
+  // Header carries the range being sent so the host can place the bytes exactly.
+  Serial.print("FILE_DATA_START:");
+  Serial.print(name);
+  Serial.print(",");
+  Serial.print(offset);
+  Serial.print(",");
+  Serial.println(size);
+
+  if (offset == size) finishFileStream();              // already up to date: empty payload + CRC of nothing
+}
+
+void serviceFileStream() {
+  if (!streamActive) return;
+
+  if (!Serial) {                                       // host closed the port mid-transfer
+    abortFileStream("USB_LOST");
+    return;
+  }
+
+  int room = Serial.availableForWrite();
+  if (room <= 0) {
+    if (millis() - streamLastProgress > STREAM_IDLE_TIMEOUT) {
+      abortFileStream("HOST_STALLED");
+    }
+    return;                                            // buffer full — yield, retry next loop()
+  }
+
+  int budget = min(room, STREAM_CHUNK);
+  while (budget > 0 && streamFile.available()) {
+    char c = streamFile.read();
+    Serial.write(c);
+    streamCrc = crc32Update(streamCrc, (uint8_t)c);
+    budget--;
+  }
+  streamLastProgress = millis();
+
+  if (!streamFile.available()) finishFileStream();
+}
+
+// One structured line per behavioural event, stamped with the device RTC and
+// carrying all three running counts. Counts are absolute rather than deltas so a
+// host that missed a line (or reconnected mid-session) resynchronizes on the
+// next event instead of drifting.
+void emitEvent(const char* type) {
+  if (!Serial) return;
+  Serial.print("EVT,");
+  Serial.print(isoNow());
+  Serial.print(",");
+  Serial.print(type);
+  Serial.print(",");
+  Serial.print(fed3.LeftCount);
+  Serial.print(",");
+  Serial.print(fed3.RightCount);
+  Serial.print(",");
+  Serial.print(fed3.PelletCount);
+  Serial.print(",");
+  Serial.println(millis());
+}
+
+void emitStatus() {
+  Serial.print("STATUS,FW:");
+  Serial.print(FNT_FW_VERSION);
+  Serial.print(",ID:");
+  Serial.print(fed3.FED);
+  Serial.print(",TIME:");
+  Serial.print(isoNow());
+  Serial.print(",MODE:");
+  Serial.print(fed3.FEDmode);
+  Serial.print(",SESSION:");
+  Serial.print(fed3.sessiontype);
+  Serial.print(",FR:");
+  Serial.print(fed3.FR);
+  Serial.print(",L:");
+  Serial.print(fed3.LeftCount);
+  Serial.print(",R:");
+  Serial.print(fed3.RightCount);
+  Serial.print(",P:");
+  Serial.print(fed3.PelletCount);
+  Serial.print(",FILE:");
+  Serial.println(fed3.filename);
 }
 
 void setup() {
@@ -400,28 +574,23 @@ void loop() {
   //                                                                     FNT Serial Comm and Live Tracking
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+  // Push a slice of any in-flight file transfer. Bounded and non-blocking, so
+  // the behavioural task above keeps running throughout an SD card download.
+  serviceFileStream();
+
   // Live Tracking System over Serial
   if (fed3.LeftCount > lastLeftCount) {
-    if (Serial) {
-      Serial.print("Left Poke, Total: ");
-      Serial.println(fed3.LeftCount);
-    }
+    emitEvent("LEFT");
     lastLeftCount = fed3.LeftCount;
   }
-  
+
   if (fed3.RightCount > lastRightCount) {
-    if (Serial) {
-      Serial.print("Right Poke, Total: ");
-      Serial.println(fed3.RightCount);
-    }
+    emitEvent("RIGHT");
     lastRightCount = fed3.RightCount;
   }
-  
+
   if (fed3.PelletCount > lastPelletCount) {
-    if (Serial) {
-      Serial.print("Pellet Dispensed, Total: ");
-      Serial.println(fed3.PelletCount);
-    }
+    emitEvent("PELLET");
     lastPelletCount = fed3.PelletCount;
   }
 
@@ -429,11 +598,23 @@ void loop() {
   if (Serial.available() > 0) {
     String command = Serial.readStringUntil('\n');
     command.trim(); // remove any carriage returns
-    
+
     // Handshake for GUI auto-discovery
     if (command == "PING") {
         Serial.print("PONG_FED3,ID:");
-        Serial.println(fed3.FED);
+        Serial.print(fed3.FED);
+        Serial.print(",FW:");
+        Serial.println(FNT_FW_VERSION);
+    }
+    else if (command == "STATUS") {
+        emitStatus();
+    }
+    else if (command == "ABORT") {                     // host-side escape hatch out of a wedged transfer
+        if (streamActive) {
+          abortFileStream("HOST_REQUEST");
+        } else {
+          Serial.println("ABORT_OK");
+        }
     }
     else if (command == "LIST_FILES") {
         File root = fed3.SD.open("/");
@@ -442,6 +623,7 @@ void loop() {
         } else {
             root.rewind();
             while (true) {
+                if (!Serial) break;                    // host vanished; don't block on a dead port
                 File entry = root.openNextFile();
                 if (!entry) {
                     break;
@@ -462,44 +644,40 @@ void loop() {
         }
     }
     else if (command.startsWith("GET_FILE:")) {
-        String reqFilename = command.substring(9);
+        // GET_FILE:<name>[,<offset>] — arms the non-blocking streamer above.
+        String args = command.substring(9);
+        args.trim();
+
+        uint32_t offset = 0;
+        int comma = args.indexOf(',');
+        String reqFilename = args;
+        if (comma != -1) {
+            reqFilename = args.substring(0, comma);
+            offset = (uint32_t)args.substring(comma + 1).toInt();
+        }
         reqFilename.trim();
-        
-        // Open the file for reading
-        File file = fed3.SD.open(reqFilename, FILE_READ);
-        if (!file) {
+
+        startFileStream(reqFilename, offset);
+    }
+    else if (command.startsWith("FSIZE:")) {
+        // Cheap "is there anything new?" probe — lets the host skip a transfer
+        // entirely when its mirror is already current.
+        String reqFilename = command.substring(6);
+        reqFilename.trim();
+        File f = fed3.SD.open(reqFilename, FILE_READ);
+        if (!f) {
             Serial.print("ERROR:FILE_NOT_FOUND:");
             Serial.println(reqFilename);
         } else {
-            Serial.print("FILE_DATA_START:");
-            Serial.println(reqFilename);
-            
-            uint32_t crc = 0xFFFFFFFF;
-            while (file.available()) {
-                char c = file.read();
-                Serial.write(c);
-                
-                // Update CRC-32
-                crc ^= (uint8_t)c;
-                for (int j = 0; j < 8; j++) {
-                    if (crc & 1) {
-                        crc = (crc >> 1) ^ 0xEDB88320;
-                    } else {
-                        crc >>= 1;
-                    }
-                }
-            }
-            file.close();
-            crc = ~crc;
-            
-            // Send EOT and CRC
-            Serial.write(0x04);
-            Serial.println();
-            Serial.print("CRC32:");
-            Serial.println(crc, HEX);
+            Serial.print("FSIZE:");
+            Serial.print(reqFilename);
+            Serial.print(",");
+            Serial.println(f.fileSize());
+            f.close();
         }
     }
     else if (command == "NEW_TRIAL") {
+        abortFileStream("NEW_TRIAL");                  // the file being streamed is about to be superseded
         fed3.LeftCount = 0;
         fed3.RightCount = 0;
         fed3.PelletCount = 0;
@@ -538,19 +716,30 @@ void loop() {
     }
     // check if the command starts with SYNC:
     else if (command.startsWith("SYNC:")) {
-        // parse the incoming string: SYNC:YYYY,MM,DD,HH,MM,SS
-        int y = command.substring(5, 9).toInt();
-        int m = command.substring(10, 12).toInt();
-        int d = command.substring(13, 15).toInt();
-        int h = command.substring(16, 18).toInt();
-        int min = command.substring(19, 21).toInt();
-        int s = command.substring(22, 24).toInt();
-        
-        // adjust the RTC
-        DateTime newTime = DateTime(y, m, d, h, min, s);
-        rtc.adjust(newTime);
-        Serial.println("Time synced successfully.");
-        fed3.UpdateDisplay();
+        // SYNC:YYYY,MM,DD,HH,MM,SS — tokenized rather than sliced at fixed
+        // offsets, so an unpadded field can't silently set the clock wrong.
+        String args = command.substring(5);
+        int f[6] = {0, 0, 0, 0, 0, 0};
+        int idx = 0;
+        int start = 0;
+        while (idx < 6) {
+            int comma = args.indexOf(',', start);
+            String tok = (comma == -1) ? args.substring(start) : args.substring(start, comma);
+            f[idx++] = tok.toInt();
+            if (comma == -1) break;
+            start = comma + 1;
+        }
+
+        if (idx < 6 || f[0] < 2000 || f[1] < 1 || f[1] > 12 || f[2] < 1 || f[2] > 31) {
+            Serial.println("ERROR:BAD_SYNC");
+        } else {
+            rtc.adjust(DateTime(f[0], f[1], f[2], f[3], f[4], f[5]));
+            // Echo the clock we ended up with so the host can record the true
+            // device time against its own and measure the residual offset.
+            Serial.print("SYNCED,");
+            Serial.println(isoNow());
+            fed3.UpdateDisplay();
+        }
     }
     // check if the command starts with MODE:
     else if (command.startsWith("MODE:")) {

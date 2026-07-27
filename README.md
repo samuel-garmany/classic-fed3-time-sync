@@ -22,26 +22,83 @@ The modified sketch is located at:
 Compared to the standard Classic FED3 firmware, this version introduces:
 1. **Disabled Sleep Mode:** Disables the standard FED3 low-power sleep state to ensure the microcontroller remains active and responsive to incoming serial messages.
 2. **Serial Connection Setup:** Initializes a serial connection at `115200` baud.
-3. **Live Event Tracking:** Automatically broadcasts nosepoke and pellet dispensing events over the serial port as they occur.
+3. **Live Event Tracking:** Automatically broadcasts nosepoke and pellet dispensing events over the serial port as they occur, timestamped from the device RTC.
 4. **Interactive Time Synchronization:** Adds a protocol to sync the FED3's real-time clock (RTC) dynamically via serial commands.
+5. **Non-blocking SD card transfers:** Log files stream to the host a slice at a time, so the behavioural task keeps running during a download.
 
+### Protocol 2.0 — why the transfer path changed
+
+Protocol 1.x pushed an entire CSV inside the serial command handler. That starved
+`fed3.run()` for the length of the transfer, so the display froze and nosepokes
+went unlogged. Worse, `Serial.write()` on the SAMD21 USB CDC endpoint **blocks
+indefinitely** once the host stops draining the buffer — any interruption on the
+host side (a cancelled download, a busy GUI, a transfer timeout) left the device
+wedged until it was power-cycled, with the trial's data recoverable only by
+pulling the SD card by hand.
+
+In 2.0, transfers are a state machine serviced once per `loop()`. Each pass moves
+at most 64 bytes, and only as many as the USB buffer will accept right now, so
+`loop()` always returns. If the host stops reading for 15 seconds the device
+aborts the transfer by itself and resumes normal operation. Transfers are also
+range-based, so an interrupted download resumes from a byte offset instead of
+starting over.
+
+> [!IMPORTANT]
+> FNT reports the firmware version reported by `PING`. Devices running 1.x still
+> stream live events, but SD-card mirroring and resumable transfers require this
+> firmware.
 
 ## Serial Communication Protocol
 
-The firmware communicates using simple text-based commands over the serial interface:
+Text commands, newline terminated, at 115200 baud.
 
-### 1. Auto-Discovery & Handshake
-* **Query:** `PING`
-* **Response:** `PONG_FED3`
-* *Purpose:* Allows the FNT GUI to automatically detect and identify connected FED3 devices on active COM ports.
+### Host → device
 
-### 2. Time Synchronization
-* **Command:** `SYNC:YYYY,MM,DD,HH,MM,SS` (e.g., `SYNC:2026,06,03,13,15,00`)
-* **Response:** `Time synced successfully.`
-* *Action:* Sets the RTC (`RTC_PCF8523`) to the specified date and time, and triggers a display redraw (`fed3.UpdateDisplay()`) to show the updated time on the OLED screen.
+| Command | Purpose |
+| --- | --- |
+| `PING` | Auto-discovery handshake |
+| `STATUS` | Full device state snapshot |
+| `SYNC:YYYY,MM,DD,HH,MM,SS` | Set the RTC (`RTC_PCF8523`) and redraw the display |
+| `LIST_FILES` | Enumerate `FED*.CSV` on the SD card |
+| `FSIZE:<name>` | Current size of one file, without transferring it |
+| `GET_FILE:<name>[,<offset>]` | Stream a file from a byte offset |
+| `ABORT` | Cancel an in-flight transfer |
+| `NEW_TRIAL` | Zero the counters and roll a new SD file |
+| `FEED` | Dispense one pellet |
+| `LIGHTS:ON` / `LIGHTS:OFF` | Toggle the NeoPixels |
+| `MODE:<spec>` | Switch behavioural program (see below) |
 
-### 3. Live Tracking Broadcasts
-When events occur, the FED3 outputs the following strings instantly:
-* **Left Nosepoke:** `Left Poke, Total: <count>`
-* **Right Nosepoke:** `Right Poke, Total: <count>`
-* **Pellet Dispensing:** `Pellet Dispensed, Total: <count>`
+### Device → host
+
+**Handshake.** `PONG_FED3,ID:<n>,FW:<version>`
+
+**Status.** `STATUS,FW:..,ID:..,TIME:..,MODE:..,SESSION:..,FR:..,L:..,R:..,P:..,FILE:..`
+
+**Events.** One line per behavioural event, stamped with the device RTC:
+
+```
+EVT,<iso8601>,<LEFT|RIGHT|PELLET>,<left>,<right>,<pellet>,<millis>
+```
+
+Counts are absolute running totals rather than deltas, so a host that dropped a
+line — or reconnected mid-session — resynchronizes on the next event instead of
+drifting.
+
+**Time sync.** `SYNCED,<iso8601>` echoes the clock the device ended up with, so
+the host can record the residual offset instead of assuming the write landed.
+
+**File listing.** `FILE:<name>,<bytes>` per entry, terminated by `END_LIST`.
+
+**File transfer.** `FILE_DATA_START:<name>,<offset>,<size>`, then the raw bytes
+from `offset`, then `0x04` (EOT) and `CRC32:<hex>`. The CRC covers only the bytes
+sent in this range and uses the same polynomial as Python's `zlib.crc32`.
+
+**Errors.** `ERROR:<code>[:<detail>]`, including `ERROR:STREAM_ABORTED:<reason>`
+mid-transfer when the device gives up on a stalled host.
+
+### Mode commands
+
+`MODE:FR1` · `MODE:FR3` · `MODE:FR5` · `MODE:FR,<ratio>` · `MODE:PR` ·
+`MODE:RR,<ratio>` · `MODE:FRTO,<ratio>,<timeout_s>` · `MODE:FREE` ·
+`MODE:EXTINCT` · `MODE:LIGHTTRK` · `MODE:FR1_R` · `MODE:FR_R,<ratio>` ·
+`MODE:PR_R` · `MODE:OPTO` · `MODE:OPTO_R` · `MODE:TIMED`
