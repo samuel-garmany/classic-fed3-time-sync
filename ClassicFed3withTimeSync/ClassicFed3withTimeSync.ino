@@ -20,8 +20,6 @@ String sketch = "Classic";       //Unique identifier text for each sketch
 FED3 fed3 (sketch);              //Start the FED3 object
 extern RTC_PCF8523 rtc;          //Connect to the clock
 
-#define FNT_FW_VERSION "2.0"                           // bumped whenever the serial protocol changes
-
 //variables for PR tasks
 int poke_num = 0;                                      // this variable is the number of pokes since last pellet
 int pokes_required = 1;                                // increase the number of pokes required each time a pellet is received using an exponential equation
@@ -210,9 +208,7 @@ void emitEvent(const char* type) {
 }
 
 void emitStatus() {
-  Serial.print("STATUS,FW:");
-  Serial.print(FNT_FW_VERSION);
-  Serial.print(",ID:");
+  Serial.print("STATUS,ID:");
   Serial.print(fed3.FED);
   Serial.print(",TIME:");
   Serial.print(isoNow());
@@ -602,9 +598,7 @@ void loop() {
     // Handshake for GUI auto-discovery
     if (command == "PING") {
         Serial.print("PONG_FED3,ID:");
-        Serial.print(fed3.FED);
-        Serial.print(",FW:");
-        Serial.println(FNT_FW_VERSION);
+        Serial.println(fed3.FED);
     }
     else if (command == "STATUS") {
         emitStatus();

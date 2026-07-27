@@ -26,28 +26,6 @@ Compared to the standard Classic FED3 firmware, this version introduces:
 4. **Interactive Time Synchronization:** Adds a protocol to sync the FED3's real-time clock (RTC) dynamically via serial commands.
 5. **Non-blocking SD card transfers:** Log files stream to the host a slice at a time, so the behavioural task keeps running during a download.
 
-### Protocol 2.0 — why the transfer path changed
-
-Protocol 1.x pushed an entire CSV inside the serial command handler. That starved
-`fed3.run()` for the length of the transfer, so the display froze and nosepokes
-went unlogged. Worse, `Serial.write()` on the SAMD21 USB CDC endpoint **blocks
-indefinitely** once the host stops draining the buffer — any interruption on the
-host side (a cancelled download, a busy GUI, a transfer timeout) left the device
-wedged until it was power-cycled, with the trial's data recoverable only by
-pulling the SD card by hand.
-
-In 2.0, transfers are a state machine serviced once per `loop()`. Each pass moves
-at most 64 bytes, and only as many as the USB buffer will accept right now, so
-`loop()` always returns. If the host stops reading for 15 seconds the device
-aborts the transfer by itself and resumes normal operation. Transfers are also
-range-based, so an interrupted download resumes from a byte offset instead of
-starting over.
-
-> [!IMPORTANT]
-> FNT reports the firmware version reported by `PING`. Devices running 1.x still
-> stream live events, but SD-card mirroring and resumable transfers require this
-> firmware.
-
 ## Serial Communication Protocol
 
 Text commands, newline terminated, at 115200 baud.
@@ -70,9 +48,9 @@ Text commands, newline terminated, at 115200 baud.
 
 ### Device → host
 
-**Handshake.** `PONG_FED3,ID:<n>,FW:<version>`
+**Handshake.** `PONG_FED3,ID:<n>`
 
-**Status.** `STATUS,FW:..,ID:..,TIME:..,MODE:..,SESSION:..,FR:..,L:..,R:..,P:..,FILE:..`
+**Status.** `STATUS,ID:..,TIME:..,MODE:..,SESSION:..,FR:..,L:..,R:..,P:..,FILE:..`
 
 **Events.** One line per behavioural event, stamped with the device RTC:
 
