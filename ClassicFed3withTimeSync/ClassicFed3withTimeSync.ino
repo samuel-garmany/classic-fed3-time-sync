@@ -25,13 +25,18 @@ String sketch = "Classic";       //Unique identifier text for each sketch
 // the host can observe; bump the major when changing the shape of an existing
 // line, which is what FNT parses against.
 //
+// 2.4 — a declared jam no longer calls fed3.DisplayJammed(), which sleeps the
+//       MCU forever and recurses; the JAM event is emitted before any display
+//       work and the device stays awake and reachable.
+// 2.3 — per-attempt FEEDING: progress, a wall-clock ceiling on one dispense,
+//       and a throttled retrieval repaint.
 // 2.2 — commands are answered *during* a dispense rather than parked; 2.1 read
 //       one and then stopped reading, so the board went silent for minutes and
 //       the host's writes backed up until the USB endpoint stalled.
 // 2.1 — dispensing is bounded and services the serial layer throughout, and
 //       reports EVT,...,JAM instead of spinning forever on an empty hopper.
 // 2.0 — ranged SD transfers, queued events, non-blocking command reads.
-#define FW_VERSION "2.2"
+#define FW_VERSION "2.4"
 
 FED3 fed3 (sketch);              //Start the FED3 object
 extern RTC_PCF8523 rtc;          //Connect to the clock
@@ -312,6 +317,11 @@ void emitEvent(const char* type) {
 ////////////////////////////////////////////////////////////////////////////////
 
 #define FEED_MAX_TURNS 60                              // dispense attempts before calling it a jam
+// A wall-clock ceiling as well as a turn count. The turn count assumes the
+// library's motor routines take about as long as their step counts suggest; this
+// holds regardless of what they actually do, so no combination of jam clearing
+// can keep the dispenser running indefinitely.
+#define FEED_MAX_MS 240000UL
 #define FEED_RETRIEVAL_TIMEOUT 300000UL                // ms to wait for the pellet to be collected
 #define FEED_POKE_HOLD_TIMEOUT 5000UL                  // ms a poke beam may stay broken before we stop waiting
 
@@ -461,6 +471,21 @@ void clearJamBanner() {
   fed3.display.fillRect(5, 15, 120, 15, WHITE);
 }
 
+// Say "jammed" on the screen without ending the device's life.
+//
+// fed3.DisplayJammed() cannot be used: it paints the banner, calls
+// LowPower.sleep() with no wake time, and then recurses into itself. It is a
+// deliberate terminal state — the board sleeps forever showing "JAMMED, PLEASE
+// CHECK" and never services USB again. That is the whole failure this firmware
+// exists to remove, so the banner is painted here instead and the device stays
+// awake, keeps logging pokes, and keeps answering the host.
+void showJammedBanner() {
+  fed3.display.fillRect(6, 20, 200, 22, WHITE);
+  fed3.display.setCursor(6, 36);
+  fed3.display.print("JAMMED - CHECK HOPPER");
+  fed3.display.refresh();
+}
+
 bool minorJamServiced() {
   return rotateServiced(100);
 }
@@ -496,8 +521,19 @@ bool feedPellet(int pulse = 0, bool pixelsoff = true) {
 
   bool pelletDispensed = false;
   fed3.numMotorTurns = 0;
+  unsigned long feedStarted = millis();
 
-  while (!pelletDispensed && fed3.numMotorTurns <= FEED_MAX_TURNS) {
+  while (!pelletDispensed && fed3.numMotorTurns <= FEED_MAX_TURNS &&
+         millis() - feedStarted < FEED_MAX_MS) {
+    // One line per attempt. A dispense that takes minutes should look like
+    // progress to the host rather than like silence, and it is what locates a
+    // hang inside the library's motor routines when one happens.
+    if (!streamActive && Serial && Serial.availableForWrite() > 24) {
+      Serial.print("FEEDING:");
+      Serial.print(fed3.numMotorTurns);
+      Serial.print("/");
+      Serial.println(FEED_MAX_TURNS);
+    }
     pelletDispensed = rotateServiced(-300);
     if (pixelsoff) fed3.pixelsOff();
     serviceSerialDuringFeed();
@@ -525,8 +561,10 @@ bool feedPellet(int pulse = 0, bool pixelsoff = true) {
     // which is the whole point: a jam during an unattended run is recoverable
     // information, not a dead cage discovered hours later.
     fed3.ReleaseMotor();
-    fed3.DisplayJammed();
+    // Told to the host first. The banner is only pixels; the event is what
+    // reaches whoever is not standing in front of the cage.
     emitEvent("JAM");
+    showJammedBanner();
     feedInProgress = false;
     return false;
   }
@@ -539,10 +577,18 @@ bool feedPellet(int pulse = 0, bool pixelsoff = true) {
   // Wait for collection, servicing serial throughout and giving up eventually,
   // instead of sleeping the MCU until a human intervenes.
   fed3.retInterval = 0;
+  unsigned long lastRetrievalDraw = 0;
   while (digitalRead(PELLET_WELL) == LOW &&
          millis() - fed3.pelletTime < FEED_RETRIEVAL_TIMEOUT) {
     fed3.retInterval = (millis() - fed3.pelletTime);
-    fed3.DisplayRetrievalInt();
+    // Throttled: DisplayRetrievalInt() ends in display.refresh(), which pushes
+    // the entire framebuffer over SPI. Called every pass of this loop it is
+    // thousands of full repaints a minute, and it is the slowest thing between
+    // one serial service call and the next.
+    if (millis() - lastRetrievalDraw >= 250) {
+      lastRetrievalDraw = millis();
+      fed3.DisplayRetrievalInt();
+    }
     feedLogPokeIfAny(LEFT_POKE, true);
     feedLogPokeIfAny(RIGHT_POKE, false);
     serviceSerialDuringFeed();
