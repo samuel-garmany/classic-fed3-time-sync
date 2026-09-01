@@ -25,6 +25,9 @@ String sketch = "Classic";       //Unique identifier text for each sketch
 // the host can observe; bump the major when changing the shape of an existing
 // line, which is what FNT parses against.
 //
+// 2.5 — the jam banner fits one line of the band the library clears, so it
+//       no longer wraps onto a row nothing repaints and settles on top of the
+//       pellet box; a cleared jam erases it.
 // 2.4 — a declared jam no longer calls fed3.DisplayJammed(), which sleeps the
 //       MCU forever and recurses; the JAM event is emitted before any display
 //       work and the device stays awake and reachable.
@@ -36,7 +39,7 @@ String sketch = "Classic";       //Unique identifier text for each sketch
 // 2.1 — dispensing is bounded and services the serial layer throughout, and
 //       reports EVT,...,JAM instead of spinning forever on an empty hopper.
 // 2.0 — ranged SD transfers, queued events, non-blocking command reads.
-#define FW_VERSION "2.4"
+#define FW_VERSION "2.5"
 
 FED3 fed3 (sketch);              //Start the FED3 object
 extern RTC_PCF8523 rtc;          //Connect to the clock
@@ -469,6 +472,9 @@ bool rotateServiced(int steps) {
 // library does at each of its early exits.
 void clearJamBanner() {
   fed3.display.fillRect(5, 15, 120, 15, WHITE);
+  // Also the band showJammedBanner() writes into, so a jam that clears itself
+  // does not leave "JAMMED" standing over a working device.
+  fed3.display.fillRect(6, 20, 200, 22, WHITE);
 }
 
 // Say "jammed" on the screen without ending the device's life.
@@ -479,10 +485,17 @@ void clearJamBanner() {
 // CHECK" and never services USB again. That is the whole failure this firmware
 // exists to remove, so the banner is painted here instead and the device stays
 // awake, keeps logging pokes, and keeps answering the host.
+//
+// The banner must fit one line of the band the library itself clears at
+// (6, 20, 200, 22). The screen is 144 px wide and the font is size 2, so
+// twelve characters is the whole line; anything longer wraps onto y=52, which
+// no library redraw ever erases, and the leftover sits on top of the pellet
+// box until the next power cycle.
 void showJammedBanner() {
   fed3.display.fillRect(6, 20, 200, 22, WHITE);
+  fed3.display.setTextSize(2);
   fed3.display.setCursor(6, 36);
-  fed3.display.print("JAMMED - CHECK HOPPER");
+  fed3.display.print("JAMMED");
   fed3.display.refresh();
 }
 
